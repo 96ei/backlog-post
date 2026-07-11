@@ -5,9 +5,161 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex">
   <title>backlog-post</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 40rem;
+      margin: 0 auto;
+      padding: 1rem;
+      line-height: 1.6;
+    }
+    h1 { font-size: 1.2rem; }
+    textarea, input {
+      width: 100%;
+      box-sizing: border-box;
+      font-size: 1rem;
+      padding: 0.6rem;
+      border: 1px solid #888;
+      border-radius: 6px;
+    }
+    textarea { min-height: 7rem; }
+    button {
+      width: 100%;
+      font-size: 1.1rem;
+      padding: 0.8rem;
+      margin-top: 0.6rem;
+      border: none;
+      border-radius: 6px;
+      background: #2da44e;
+      color: #fff;
+    }
+    button:disabled { opacity: 0.5; }
+    #status { margin-top: 0.8rem; white-space: pre-wrap; word-break: break-all; }
+    .ok { color: #2da44e; }
+    .err { color: #d1242f; }
+    .hint { font-size: 0.85rem; color: #777; }
+    #tokenSection { border: 1px solid #888; border-radius: 6px; padding: 0.8rem; margin-bottom: 1rem; }
+    a { color: inherit; }
+    footer { margin-top: 2rem; font-size: 0.8rem; color: #777; }
+  </style>
 </head>
 <body>
   <h1>backlog-post</h1>
-  <p>v1 準備中 — venture-lab の backlog.md にスマホから追記するページ。</p>
+  <p class="hint">venture-lab の knowledge/backlog.md に追記コミットする。
+    「- 」で始まらない行には今日の日付を自動で付ける。</p>
+
+  <div id="tokenSection" hidden>
+    <p>初回設定: fine-grained PAT(96ei/venture-lab の Contents: Read and write のみ)を入力。
+      この端末の localStorage にだけ保存される。</p>
+    <input id="tokenInput" type="password" placeholder="github_pat_..." autocomplete="off">
+    <button id="saveToken">トークンを保存</button>
+  </div>
+
+  <textarea id="entry" placeholder="用語 — 出会った文脈 [タグ]"></textarea>
+  <button id="send">backlog.md に追記</button>
+  <p id="status"></p>
+
+  <footer>
+    <a href="#" id="clearToken">保存済みトークンを削除</a> /
+    <a href="https://github.com/96ei/venture-lab/blob/master/knowledge/backlog.md">backlog.md を見る</a>
+  </footer>
+
+  <script>
+    // -- core start (node のテストでもこのブロックをそのまま使う)
+    const OWNER = "96ei", REPO = "venture-lab", PATH = "knowledge/backlog.md", BRANCH = "master";
+    const API = `https://api.github.com/repos/${OWNER}/${REPO}/contents/${PATH}`;
+
+    function utf8FromB64(b64) {
+      return new TextDecoder().decode(
+        Uint8Array.from(atob(b64.replace(/\s/g, "")), c => c.charCodeAt(0)));
+    }
+    function b64FromUtf8(s) {
+      let bin = "";
+      new TextEncoder().encode(s).forEach(b => { bin += String.fromCharCode(b); });
+      return btoa(bin);
+    }
+    function todayJST() {
+      return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+    }
+    function buildAppended(existing, input, today) {
+      const lines = input.split("\n").map(l => l.trim()).filter(Boolean)
+        .map(l => l.startsWith("- ") ? l : `- ${today} ${l}`);
+      if (lines.length === 0) return null;
+      const base = existing.endsWith("\n") ? existing : existing + "\n";
+      return base + lines.join("\n") + "\n";
+    }
+
+    async function appendToBacklog(token, input, fetchFn) {
+      const headers = {
+        "Authorization": `Bearer ${token}`,
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+      };
+      const getRes = await fetchFn(`${API}?ref=${BRANCH}`, { headers });
+      if (!getRes.ok) throw new Error(`取得に失敗 (HTTP ${getRes.status})`);
+      const file = await getRes.json();
+      const newContent = buildAppended(utf8FromB64(file.content), input, todayJST());
+      if (newContent === null) throw new Error("追記する行がありません");
+      const putRes = await fetchFn(API, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({
+          message: "backlog: スマホから追記 (backlog-post)",
+          content: b64FromUtf8(newContent),
+          sha: file.sha,
+          branch: BRANCH,
+        }),
+      });
+      if (!putRes.ok) throw new Error(`コミットに失敗 (HTTP ${putRes.status})`);
+      return (await putRes.json()).commit.html_url;
+    }
+    // -- core end
+
+    const $ = id => document.getElementById(id);
+    const TOKEN_KEY = "backlog_post_pat";
+
+    function refreshTokenUI() {
+      $("tokenSection").hidden = !!localStorage.getItem(TOKEN_KEY);
+    }
+    $("saveToken").onclick = () => {
+      const t = $("tokenInput").value.trim();
+      if (!t) return;
+      localStorage.setItem(TOKEN_KEY, t);
+      $("tokenInput").value = "";
+      refreshTokenUI();
+    };
+    $("clearToken").onclick = e => {
+      e.preventDefault();
+      localStorage.removeItem(TOKEN_KEY);
+      refreshTokenUI();
+      $("status").textContent = "トークンを削除した";
+      $("status").className = "";
+    };
+    $("send").onclick = async () => {
+      const token = localStorage.getItem(TOKEN_KEY);
+      const status = $("status");
+      if (!token) {
+        status.textContent = "先にトークンを保存してください";
+        status.className = "err";
+        return;
+      }
+      $("send").disabled = true;
+      status.textContent = "送信中…";
+      status.className = "";
+      try {
+        const url = await appendToBacklog(token, $("entry").value, fetch);
+        $("entry").value = "";
+        status.innerHTML = `追記した ✓ <a href="${url}">コミットを見る</a>`;
+        status.className = "ok";
+      } catch (err) {
+        status.textContent = `${err.message}(401ならトークンを削除して再設定)`;
+        status.className = "err";
+      } finally {
+        $("send").disabled = false;
+      }
+    };
+    refreshTokenUI();
+  </script>
 </body>
 </html>
