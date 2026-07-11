@@ -84,7 +84,11 @@
     }
     function buildAppended(existing, input, today) {
       const lines = input.split("\n").map(l => l.trim()).filter(Boolean)
-        .map(l => l.startsWith("- ") ? l : `- ${today} ${l}`);
+        .map(l => {
+          if (l.startsWith("- ")) return l;
+          if (/^\d{4}-\d{2}-\d{2}\s/.test(l)) return `- ${l}`; // 日付が既にあれば付けない
+          return `- ${today} ${l}`;
+        });
       if (lines.length === 0) return null;
       const base = existing.endsWith("\n") ? existing : existing + "\n";
       return base + lines.join("\n") + "\n";
